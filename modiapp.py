@@ -5,9 +5,111 @@ import streamlit as st
 import pandas as pd
 import pickle
 import os
+import bcrypt
 
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestRegressor
+
+# =============================
+# 🔐 AUTH SYSTEM
+# =============================
+USER_FILE = "users.csv"
+
+# Create user file if not exists
+if not os.path.exists(USER_FILE):
+    pd.DataFrame(columns=["username", "password"]).to_csv(USER_FILE, index=False)
+
+
+def hash_password(password):
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt())
+
+
+def check_password(password, hashed):
+    return bcrypt.checkpw(password.encode(), hashed.encode())
+
+
+def user_exists(username):
+    df = pd.read_csv(USER_FILE)
+    return username in df["username"].values
+
+
+def register_user(username, password):
+    df = pd.read_csv(USER_FILE)
+    hashed = hash_password(password).decode()
+
+    new_user = pd.DataFrame([[username, hashed]], columns=["username", "password"])
+    df = pd.concat([df, new_user], ignore_index=True)
+    df.to_csv(USER_FILE, index=False)
+
+
+def authenticate_user(username, password):
+    df = pd.read_csv(USER_FILE)
+    user = df[df["username"] == username]
+
+    if user.empty:
+        return False
+
+    stored_hash = user.iloc[0]["password"]
+    return check_password(password, stored_hash)
+
+
+# Session state
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+
+if "username" not in st.session_state:
+    st.session_state.username = ""
+
+# =============================
+# 🔐 LOGIN / SIGNUP PAGE
+# =============================
+if not st.session_state.logged_in:
+
+    st.set_page_config(page_title="Login", layout="centered")
+    st.title("🔐 Insurance System Login")
+
+    tab1, tab2 = st.tabs(["Login", "Sign Up"])
+
+    # -------- LOGIN --------
+    with tab1:
+        st.subheader("Login")
+
+        username = st.text_input("Username", key="login_user")
+        password = st.text_input("Password", type="password", key="login_pass")
+
+        if st.button("Login"):
+            if authenticate_user(username, password):
+                st.session_state.logged_in = True
+                st.session_state.username = username
+                st.success("Login Successful ✅")
+                st.rerun()
+            else:
+                st.error("Invalid Username or Password ❌")
+
+    # -------- SIGNUP --------
+    with tab2:
+        st.subheader("Create Account")
+
+        new_user = st.text_input("Username", key="signup_user")
+        new_pass = st.text_input("Password", type="password", key="signup_pass")
+        confirm_pass = st.text_input("Confirm Password")
+
+        if st.button("Sign Up"):
+
+            if user_exists(new_user):
+                st.warning("Username already exists ⚠️")
+
+            elif new_pass != confirm_pass:
+                st.warning("Passwords do not match ⚠️")
+
+            elif len(new_pass) < 4:
+                st.warning("Password must be at least 4 characters ⚠️")
+
+            else:
+                register_user(new_user, new_pass)
+                st.success("Account created successfully! Please login ✅")
+
+    st.stop()
 
 # =============================
 # 📂 LOAD DATA
@@ -50,10 +152,20 @@ with open("columns.pkl", "rb") as f:
     feature_columns = pickle.load(f)
 
 # =============================
-# 🖥️ UI CONFIG
+# 🖥️ MAIN APP UI
 # =============================
 st.set_page_config(page_title="Insurance System", layout="wide")
 st.title("💰 Insurance Analytics & Prediction System")
+
+# =============================
+# 🚪 LOGOUT
+# =============================
+st.sidebar.write(f"👋 Welcome, {st.session_state.username}")
+
+if st.sidebar.button("Logout"):
+    st.session_state.logged_in = False
+    st.session_state.username = ""
+    st.rerun()
 
 # =============================
 # 🔘 MODE SELECTION
@@ -84,9 +196,9 @@ elif mode == "👤 Prediction Mode":
 
     user_name = st.text_input("Enter Your Name")
 
-    age = st.number_input("Age", min_value=18, max_value=100, value=30)
-    bmi = st.number_input("BMI", min_value=10.0, max_value=50.0, value=25.0)
-    children = st.number_input("Number of Children", min_value=0, max_value=10, value=1)
+    age = st.number_input("Age", 18, 100, 30)
+    bmi = st.number_input("BMI", 10.0, 50.0, 25.0)
+    children = st.number_input("Children", 0, 10, 1)
 
     sex = st.selectbox("Sex", ["male", "female"])
     smoker = st.selectbox("Smoker", ["yes", "no"])
@@ -103,17 +215,14 @@ elif mode == "👤 Prediction Mode":
         "region": region
     }
 
-    # =============================
-    # 👨‍👩‍👧 FAMILY (OPTIONAL)
-    # =============================
+    # -------- FAMILY --------
     st.header("👨‍👩‍👧 Family Members (Optional)")
 
     add_family = st.checkbox("Add Family Members")
-
     family_data = []
 
     if add_family:
-        num_members = st.number_input("Number of Family Members", 1, 10, 1)
+        num_members = st.number_input("Number of Members", 1, 10, 1)
 
         for i in range(num_members):
 
@@ -142,30 +251,24 @@ elif mode == "👤 Prediction Mode":
                 "region": f_region
             })
 
-    # =============================
-    # 🔮 PREDICT FUNCTION
-    # =============================
+    # -------- PREDICT FUNCTION --------
     def predict_cost(data):
         df_input = pd.DataFrame([data])
         df_input = pd.get_dummies(df_input)
         df_input = df_input.reindex(columns=feature_columns, fill_value=0)
         return model.predict(df_input)[0]
 
-    # =============================
-    # 💰 CALCULATE
-    # =============================
+    # -------- CALCULATE --------
     if st.button("Calculate Insurance Cost"):
 
         total_cost = 0
 
         st.subheader("💵 Cost Breakdown")
 
-        # User
         user_cost = predict_cost(user_data)
         total_cost += user_cost
         st.write(f"👤 {user_name if user_name else 'User'}: ₹ {user_cost:,.2f}")
 
-        # Family
         for member in family_data:
             cost = predict_cost(member)
             total_cost += cost
